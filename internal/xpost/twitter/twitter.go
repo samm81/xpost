@@ -31,6 +31,7 @@ const (
 
 	providerName = "twitter"
 	maxChars     = 280 // Twitter's post character limit
+	maxImages    = 4
 
 	metadataEndpoint = "https://upload.twitter.com/1.1/media/metadata/create.json"
 )
@@ -85,6 +86,13 @@ func (c *Client) Name() string { return providerName }
 
 // Validate checks if the request meets Twitter's constraints.
 func (c *Client) Validate(req xpost.Request) error {
+	if len(req.Attachments) > maxImages {
+		return xpost.ValidationError{
+			Provider: providerName,
+			Reason:   fmt.Sprintf("too many images: %d (max %d)", len(req.Attachments), maxImages),
+		}
+	}
+
 	text := req.Message
 	if req.Link != "" {
 		text = text + "\n\n" + req.Link
@@ -105,12 +113,21 @@ func (c *Client) Validate(req xpost.Request) error {
 
 // Post publishes the message (and optional media) to X.
 func (c *Client) Post(ctx context.Context, req xpost.Request) error {
+	_, err := c.PostResult(ctx, req)
+	return err
+}
+
+// PostResult publishes the message and returns the remote tweet identity.
+func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Result, error) {
 	var mediaIDs []string
-	if strings.TrimSpace(req.ImagePath) != "" {
-		logutil.Debugf("uploading media: path=%s", req.ImagePath)
-		mediaID, err := c.uploadMedia(ctx, req.ImagePath, req.ImageAlt)
+	if len(req.Attachments) > 0 {
+		mediaIDs = make([]string, 0, len(req.Attachments))
+	}
+	for _, attachment := range req.Attachments {
+		logutil.Debugf("uploading media: path=%s", attachment.Path)
+		mediaID, err := c.uploadMedia(ctx, attachment.Path, attachment.Alt)
 		if err != nil {
-			return err
+			return xpost.Result{}, err
 		}
 		mediaIDs = append(mediaIDs, mediaID)
 		logutil.Debugf("media uploaded: media_id=%s", mediaID)
@@ -128,14 +145,29 @@ func (c *Client) Post(ctx context.Context, req xpost.Request) error {
 	if len(mediaIDs) > 0 {
 		input.Media = &managetweettypes.CreateInputMedia{MediaIDs: mediaIDs}
 	}
+	if req.ReplyTo != nil {
+		if strings.TrimSpace(req.ReplyTo.ID) == "" {
+			return xpost.Result{}, xpost.ValidationError{
+				Provider: providerName,
+				Reason:   "reply reference requires an id",
+			}
+		}
+		input.Reply = &managetweettypes.CreateInputReply{
+			InReplyToTweetID: req.ReplyTo.ID,
+		}
+	}
 
 	logutil.Debugf("posting tweet: media_count=%d", len(mediaIDs))
-	if _, err := managetweet.Create(ctx, c.api, input); err != nil {
-		return fmt.Errorf("post tweet: %w", unwrapGotwiError(err))
+	response, err := managetweet.Create(ctx, c.api, input)
+	if err != nil {
+		return xpost.Result{}, fmt.Errorf("post tweet: %w", unwrapGotwiError(err))
+	}
+	if response == nil || response.Data.ID == nil || strings.TrimSpace(*response.Data.ID) == "" {
+		return xpost.Result{}, errors.New("post tweet: empty response")
 	}
 	logutil.Debugf("tweet posted successfully")
 
-	return nil
+	return xpost.Result{RemoteID: *response.Data.ID}, nil
 }
 
 func (c *Client) uploadMedia(ctx context.Context, imagePath, altText string) (string, error) {

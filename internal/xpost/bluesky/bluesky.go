@@ -28,6 +28,7 @@ const (
 	providerName   = "bluesky"
 	requestTimeout = 30 * time.Second
 	maxGraphemes   = 300 // Bluesky's post character limit in graphemes
+	maxImages      = 4
 )
 
 // urlRegex matches URLs in text for creating link facets
@@ -81,6 +82,13 @@ func (c *Client) Name() string { return providerName }
 
 // Validate checks if the request meets Bluesky's constraints.
 func (c *Client) Validate(req xpost.Request) error {
+	if len(req.Attachments) > maxImages {
+		return xpost.ValidationError{
+			Provider: providerName,
+			Reason:   fmt.Sprintf("too many images: %d (max %d)", len(req.Attachments), maxImages),
+		}
+	}
+
 	text := req.Message
 	if req.Link != "" {
 		text = text + "\n\n" + req.Link
@@ -97,6 +105,12 @@ func (c *Client) Validate(req xpost.Request) error {
 
 // Post creates a new Bluesky post with an optional image embed.
 func (c *Client) Post(ctx context.Context, req xpost.Request) error {
+	_, err := c.PostResult(ctx, req)
+	return err
+}
+
+// PostResult creates a new Bluesky post and returns its remote identity.
+func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Result, error) {
 	// Build the text, appending link if provided
 	text := req.Message
 	if req.Link != "" {
@@ -109,24 +123,45 @@ func (c *Client) Post(ctx context.Context, req xpost.Request) error {
 		Facets:    extractLinkFacets(text),
 	}
 
-	if req.ImagePath != "" {
-		blob, err := c.uploadImage(ctx, req.ImagePath)
-		if err != nil {
-			return err
+	if len(req.Attachments) > 0 {
+		images := make([]*bsky.EmbedImages_Image, 0, len(req.Attachments))
+		for _, attachment := range req.Attachments {
+			blob, err := c.uploadImage(ctx, attachment.Path)
+			if err != nil {
+				return xpost.Result{}, err
+			}
+			images = append(images, &bsky.EmbedImages_Image{
+				Alt:   attachment.Alt,
+				Image: blob,
+			})
 		}
 		post.Embed = &bsky.FeedPost_Embed{
 			EmbedImages: &bsky.EmbedImages{
-				Images: []*bsky.EmbedImages_Image{
-					{
-						Alt:   req.ImageAlt,
-						Image: blob,
-					},
-				},
+				Images: images,
 			},
 		}
 	}
 
-	_, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+	if req.ReplyTo != nil {
+		parent, err := strongRef(req.ReplyTo)
+		if err != nil {
+			return xpost.Result{}, err
+		}
+		root := req.RootReplyTo
+		if root == nil {
+			root = req.ReplyTo
+		}
+		rootRef, err := strongRef(root)
+		if err != nil {
+			return xpost.Result{}, err
+		}
+		post.Reply = &bsky.FeedPost_ReplyRef{
+			Parent: parent,
+			Root:   rootRef,
+		}
+	}
+
+	response, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
 		Collection: "app.bsky.feed.post",
 		Repo:       c.client.Auth.Did,
 		Record: &util.LexiconTypeDecoder{
@@ -134,10 +169,35 @@ func (c *Client) Post(ctx context.Context, req xpost.Request) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create record: %w", err)
+		return xpost.Result{}, fmt.Errorf("create record: %w", err)
+	}
+	if response == nil || response.Uri == "" || response.Cid == "" {
+		return xpost.Result{}, errors.New("create record: empty response")
 	}
 
-	return nil
+	return xpost.Result{
+		RemoteID:  response.Uri,
+		RemoteCID: response.Cid,
+		URL:       postURL(response.Uri, c.client.Auth.Handle),
+	}, nil
+}
+
+func strongRef(ref *xpost.Reference) (*atproto.RepoStrongRef, error) {
+	if ref == nil || strings.TrimSpace(ref.ID) == "" || strings.TrimSpace(ref.CID) == "" {
+		return nil, xpost.ValidationError{
+			Provider: providerName,
+			Reason:   "reply reference requires an id and cid",
+		}
+	}
+	return &atproto.RepoStrongRef{Uri: ref.ID, Cid: ref.CID}, nil
+}
+
+func postURL(uri, handle string) string {
+	parts := strings.Split(strings.TrimPrefix(uri, "at://"), "/")
+	if len(parts) != 3 || parts[1] != "app.bsky.feed.post" || handle == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://bsky.app/profile/%s/post/%s", handle, parts[2])
 }
 
 func (c *Client) uploadImage(ctx context.Context, path string) (*util.LexBlob, error) {

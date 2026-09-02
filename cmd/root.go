@@ -53,6 +53,7 @@ var supportedTargets = map[string]struct{}{
 	"bluesky":  {},
 	"mastodon": {},
 	"twitter":  {},
+	"x":        {},
 }
 
 const (
@@ -87,6 +88,7 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print actions without posting")
 	cmd.PersistentFlags().BoolVarP(&verbose, "verbose", "V", false, "Enable verbose logging")
 	cmd.Flags().SortFlags = false
+	cmd.AddCommand(newBridgeCommand())
 
 	return cmd
 }
@@ -107,13 +109,18 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	}
 
 	req := xpost.Request{
-		Message:   message,
-		Link:      strings.TrimSpace(linkFlag),
-		ImagePath: imagePath,
-		ImageAlt:  strings.TrimSpace(imageAlt),
+		Message: message,
+		Link:    strings.TrimSpace(linkFlag),
 	}
-	if req.ImageAlt == "" && req.ImagePath != "" {
-		req.ImageAlt = defaultAltText
+	if imagePath != "" {
+		attachment := xpost.Attachment{
+			Path: imagePath,
+			Alt:  strings.TrimSpace(imageAlt),
+		}
+		if attachment.Alt == "" {
+			attachment.Alt = defaultAltText
+		}
+		req.Attachments = []xpost.Attachment{attachment}
 	}
 
 	posters, err := buildPosters(ctx, resolvedTargets)
@@ -207,6 +214,9 @@ func buildPosters(ctx context.Context, targets []string) ([]xpost.Poster, error)
 		"bluesky": func(ctx context.Context) (xpost.Poster, error) {
 			return bluesky.New(ctx, bluesky.Config{PDSURL: defaultBlueskyPDSURL})
 		},
+		"x": func(ctx context.Context) (xpost.Poster, error) {
+			return twitter.New(ctx)
+		},
 		"mastodon": func(ctx context.Context) (xpost.Poster, error) {
 			return mastodon.New(ctx)
 		},
@@ -264,8 +274,8 @@ func dispatch(ctx context.Context, posters []xpost.Poster, req xpost.Request, ou
 		for _, poster := range posters {
 			fmt.Fprintf(out, "[dry-run] would post to %s: %q\n", styledProvider(poster.Name(), out), message)
 		}
-		if req.ImagePath != "" {
-			fmt.Fprintf(out, "[dry-run] image: %s (alt: %q)\n", req.ImagePath, req.ImageAlt)
+		for _, attachment := range req.Attachments {
+			fmt.Fprintf(out, "[dry-run] image: %s (alt: %q)\n", attachment.Path, attachment.Alt)
 		}
 		return nil
 	}

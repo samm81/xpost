@@ -21,6 +21,7 @@ const (
 	providerName   = "mastodon"
 	requestTimeout = 30 * time.Second
 	maxChars       = 500 // Mastodon's default post character limit
+	maxImages      = 4
 )
 
 // Config contains the settings needed to reach a Mastodon server.
@@ -59,6 +60,13 @@ func (c *Client) Name() string { return providerName }
 
 // Validate checks if the request meets Mastodon's constraints.
 func (c *Client) Validate(req xpost.Request) error {
+	if len(req.Attachments) > maxImages {
+		return xpost.ValidationError{
+			Provider: providerName,
+			Reason:   fmt.Sprintf("too many images: %d (max %d)", len(req.Attachments), maxImages),
+		}
+	}
+
 	text := req.Message
 	if req.Link != "" {
 		text = text + "\n\n" + req.Link
@@ -75,11 +83,20 @@ func (c *Client) Validate(req xpost.Request) error {
 
 // Post publishes a new toot to the configured Mastodon instance.
 func (c *Client) Post(ctx context.Context, req xpost.Request) error {
+	_, err := c.PostResult(ctx, req)
+	return err
+}
+
+// PostResult publishes a new toot and returns its remote identity.
+func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Result, error) {
 	var mediaIDs []mastodonapi.ID
-	if req.ImagePath != "" {
-		attachment, err := c.uploadMedia(ctx, req.ImagePath, req.ImageAlt)
+	if len(req.Attachments) > 0 {
+		mediaIDs = make([]mastodonapi.ID, 0, len(req.Attachments))
+	}
+	for _, image := range req.Attachments {
+		attachment, err := c.uploadMedia(ctx, image.Path, image.Alt)
 		if err != nil {
-			return err
+			return xpost.Result{}, err
 		}
 		mediaIDs = append(mediaIDs, attachment.ID)
 	}
@@ -89,16 +106,27 @@ func (c *Client) Post(ctx context.Context, req xpost.Request) error {
 	if req.Link != "" {
 		status = status + "\n\n" + req.Link
 	}
-
-	_, err := c.client.PostStatus(ctx, &mastodonapi.Toot{
-		Status:   status,
-		MediaIDs: mediaIDs,
-	})
-	if err != nil {
-		return fmt.Errorf("post status: %w", err)
+	var replyID mastodonapi.ID
+	if req.ReplyTo != nil {
+		replyID = mastodonapi.ID(req.ReplyTo.ID)
 	}
 
-	return nil
+	response, err := c.client.PostStatus(ctx, &mastodonapi.Toot{
+		Status:      status,
+		InReplyToID: replyID,
+		MediaIDs:    mediaIDs,
+	})
+	if err != nil {
+		return xpost.Result{}, fmt.Errorf("post status: %w", err)
+	}
+	if response == nil || response.ID == "" {
+		return xpost.Result{}, errors.New("post status: empty response")
+	}
+
+	return xpost.Result{
+		RemoteID: string(response.ID),
+		URL:      response.URL,
+	}, nil
 }
 
 func (c *Client) uploadMedia(ctx context.Context, path, alt string) (*mastodonapi.Attachment, error) {
