@@ -37,9 +37,9 @@ type Client struct {
 	client *mastodonapi.Client
 }
 
-// New constructs a Mastodon poster based on environment configuration.
-func New(ctx context.Context) (xpost.Poster, error) {
-	cfg, err := loadConfigFromEnv()
+// New constructs a Mastodon poster using the supplied configuration.
+func New(ctx context.Context, base Config) (xpost.Poster, error) {
+	cfg, err := loadConfig(base)
 	if err != nil {
 		return nil, err
 	}
@@ -150,12 +150,12 @@ func (c *Client) uploadMedia(ctx context.Context, path, alt string) (*mastodonap
 	return attachment, nil
 }
 
-func loadConfigFromEnv() (Config, error) {
+func loadConfig(base Config) (Config, error) {
 	cfg := Config{
-		Server:       strings.TrimSpace(os.Getenv(envServer)),
-		AccessToken:  strings.TrimSpace(os.Getenv(envAccessToken)),
-		ClientID:     strings.TrimSpace(os.Getenv(envClientID)),
-		ClientSecret: strings.TrimSpace(os.Getenv(envClientSecret)),
+		Server:       strings.TrimSpace(base.Server),
+		AccessToken:  strings.TrimSpace(base.AccessToken),
+		ClientID:     strings.TrimSpace(base.ClientID),
+		ClientSecret: strings.TrimSpace(base.ClientSecret),
 	}
 
 	var missing []string

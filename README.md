@@ -39,28 +39,34 @@ Or download the latest [release](https://github.com/blacktop/xpost/releases/late
 
 ### Configuration
 
-Set environment variables for the platforms you want to use:
+By default, xpost reads `~/.config/xpost/config.toml`. Use `--config` to
+select another file. Keep this file private because it contains credentials.
 
-**Twitter/X**
-```bash
-export XPOST_TWITTER_CONSUMER_KEY="your_key"
-export XPOST_TWITTER_CONSUMER_SECRET="your_secret"
-export XPOST_TWITTER_ACCESS_TOKEN="your_token"
-export XPOST_TWITTER_ACCESS_TOKEN_SECRET="your_token_secret"
+```toml
+[bluesky]
+handle = "your.handle"
+app_password = "your_app_password"
+# pds_url = "https://bsky.social"
+
+[mastodon]
+server = "https://mastodon.social"
+access_token = "your_token"
+# client_id = "your_client_id"
+# client_secret = "your_client_secret"
+
+[twitter]
+consumer_key = "your_key"
+consumer_secret = "your_secret"
+access_token = "your_token"
+access_token_secret = "your_token_secret"
 ```
 
-**Mastodon**
-```bash
-export XPOST_MASTODON_SERVER="https://mastodon.social"
-export XPOST_MASTODON_ACCESS_TOKEN="your_token"
-export XPOST_MASTODON_CLIENT_ID="your_client_id"
-export XPOST_MASTODON_CLIENT_SECRET="your_client_secret"
-```
+The environment variables from earlier versions are still supported and
+override values from the TOML file. This is useful for temporary overrides and
+existing scripts.
 
-**BlueSky**
 ```bash
-export XPOST_BLUESKY_HANDLE="your.handle"
-export XPOST_BLUESKY_APP_PASSWORD="your_app_password"
+xpost --config ~/.config/xpost/config.toml "hello world"
 ```
 
 ### Usage

@@ -50,7 +50,12 @@ func runBridge(cmd *cobra.Command, _ []string) error {
 		})
 	}
 
-	posterList, err := buildPosters(cmd.Context(), []string{target})
+	configuration, err := loadConfiguration(configPath)
+	if err != nil {
+		return writeBridgeResponse(cmd, bridgeErrorResponse(err))
+	}
+
+	posterList, err := buildPosters(cmd.Context(), []string{target}, configuration)
 	if err != nil {
 		return writeBridgeResponse(cmd, bridgeErrorResponse(err))
 	}
@@ -106,9 +111,15 @@ func bridgeErrorResponse(err error) xpost.BridgeResponse {
 	kind := "transport"
 	var validationErr xpost.ValidationError
 	var missingEnvErr xpost.MissingEnvError
-	if errors.As(err, &validationErr) || errors.As(err, &missingEnvErr) {
+	var configurationErr configurationError
+	var configLoadErr configLoadError
+	if errors.As(err, &validationErr) || errors.As(err, &missingEnvErr) ||
+		errors.As(err, &configurationErr) || errors.As(err, &configLoadErr) {
 		status = xpost.BridgeStatusRejected
 		kind = "validation"
+		if errors.As(err, &configurationErr) || errors.As(err, &configLoadErr) {
+			kind = "configuration"
+		}
 	}
 	return xpost.BridgeResponse{
 		Status:    status,

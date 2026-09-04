@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,7 @@ func TestRootNoArgsPrintsHelp(t *testing.T) {
 	imagePath = ""
 	imageAlt = ""
 	targetsFlag = nil
+	configPath = ""
 	dryRun = false
 	verbose = false
 
@@ -37,6 +39,7 @@ func TestResolveMessageReadsPipedInput(t *testing.T) {
 	imagePath = ""
 	imageAlt = ""
 	targetsFlag = nil
+	configPath = ""
 	dryRun = false
 	verbose = false
 
@@ -66,16 +69,20 @@ func TestBuildPostersReportsMissingConfiguration(t *testing.T) {
 		t.Setenv(variable, "")
 	}
 
-	_, err := buildPosters(context.Background(), []string{"bluesky", "mastodon", "twitter"})
+	_, err := buildPosters(context.Background(), []string{"bluesky", "mastodon", "twitter"}, configuration{})
 	if err == nil {
 		t.Fatal("buildPosters() error = nil, want configuration error")
+	}
+	var configurationErr configurationError
+	if !errors.As(err, &configurationErr) {
+		t.Fatalf("error = %T, want configurationError", err)
 	}
 	message := err.Error()
 	for _, expected := range []string{
 		"no publishing targets are configured",
-		"bluesky: set XPOST_BLUESKY_HANDLE, XPOST_BLUESKY_APP_PASSWORD",
-		"mastodon: set XPOST_MASTODON_SERVER, XPOST_MASTODON_ACCESS_TOKEN",
-		"twitter: set XPOST_TWITTER_CONSUMER_KEY",
+		"bluesky: XPOST_BLUESKY_HANDLE, XPOST_BLUESKY_APP_PASSWORD",
+		"mastodon: XPOST_MASTODON_SERVER, XPOST_MASTODON_ACCESS_TOKEN",
+		"twitter: XPOST_TWITTER_CONSUMER_KEY",
 	} {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("error = %q, want %q", message, expected)

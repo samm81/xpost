@@ -51,9 +51,9 @@ type Client struct {
 	api *gotwi.Client
 }
 
-// New constructs a Twitter poster using gotwi and OAuth 1.0a credentials.
-func New(ctx context.Context) (xpost.Poster, error) {
-	cfg, err := loadConfigFromEnv()
+// New constructs a Twitter poster using the supplied OAuth 1.0a configuration.
+func New(ctx context.Context, base Config) (xpost.Poster, error) {
+	cfg, err := loadConfig(base)
 	if err != nil {
 		return nil, err
 	}
@@ -270,12 +270,12 @@ func (c *Client) setAltText(ctx context.Context, mediaID, altText string) error 
 	return nil
 }
 
-func loadConfigFromEnv() (Config, error) {
+func loadConfig(base Config) (Config, error) {
 	cfg := Config{
-		APIKey:       strings.TrimSpace(os.Getenv(envAPIKey)),
-		APISecret:    strings.TrimSpace(os.Getenv(envAPISecret)),
-		AccessToken:  strings.TrimSpace(os.Getenv(envAccessToken)),
-		AccessSecret: strings.TrimSpace(os.Getenv(envAccessSecret)),
+		APIKey:       strings.TrimSpace(base.APIKey),
+		APISecret:    strings.TrimSpace(base.APISecret),
+		AccessToken:  strings.TrimSpace(base.AccessToken),
+		AccessSecret: strings.TrimSpace(base.AccessSecret),
 	}
 
 	var missing []string

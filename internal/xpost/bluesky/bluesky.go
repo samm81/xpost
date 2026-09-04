@@ -34,9 +34,11 @@ const (
 // urlRegex matches URLs in text for creating link facets
 var urlRegex = regexp.MustCompile(`https?://[^\s]+`)
 
-// Config allows the caller to supply defaults prior to reading environment variables.
+// Config contains Bluesky credentials and endpoint settings.
 type Config struct {
-	PDSURL string
+	Handle      string
+	AppPassword string
+	PDSURL      string
 }
 
 // Client implements the xpost.Poster interface for Bluesky.
@@ -236,13 +238,9 @@ type ProviderConfig struct {
 
 func loadConfig(base Config) (ProviderConfig, error) {
 	cfg := ProviderConfig{
-		Handle:      strings.TrimSpace(os.Getenv(envHandle)),
-		AppPassword: strings.TrimSpace(os.Getenv(envAppPassword)),
-		PDSURL:      strings.TrimSpace(os.Getenv(envPDSURL)),
-	}
-
-	if cfg.PDSURL == "" {
-		cfg.PDSURL = strings.TrimSpace(base.PDSURL)
+		Handle:      strings.TrimSpace(base.Handle),
+		AppPassword: strings.TrimSpace(base.AppPassword),
+		PDSURL:      strings.TrimSpace(base.PDSURL),
 	}
 	if cfg.PDSURL == "" {
 		cfg.PDSURL = "https://bsky.social"

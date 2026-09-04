@@ -45,6 +45,7 @@ var (
 	imagePath   string
 	imageAlt    string
 	targetsFlag []string
+	configPath  string
 	dryRun      bool
 	verbose     bool
 )
@@ -59,8 +60,7 @@ var supportedTargets = map[string]struct{}{
 }
 
 const (
-	defaultAltText       = "Image attached via xpost"
-	defaultBlueskyPDSURL = "https://bsky.social"
+	defaultAltText = "Image attached via xpost"
 )
 
 // Execute runs the root command.
@@ -88,6 +88,7 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&imageAlt, "alt-text", "", "Alternative text to describe the image")
 	cmd.Flags().StringSliceVar(&targetsFlag, "target", []string{"twitter", "mastodon", "bluesky"}, "Targets to post to (twitter, mastodon, bluesky, or all)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print actions without posting")
+	cmd.PersistentFlags().StringVar(&configPath, "config", "", "Path to the TOML configuration file")
 	cmd.PersistentFlags().BoolVarP(&verbose, "verbose", "V", false, "Enable verbose logging")
 	cmd.Flags().SortFlags = false
 	cmd.AddCommand(newBridgeCommand())
@@ -131,7 +132,12 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		req.Attachments = []xpost.Attachment{attachment}
 	}
 
-	posters, err := buildPosters(ctx, resolvedTargets)
+	configuration, err := loadConfiguration(configPath)
+	if err != nil {
+		return err
+	}
+
+	posters, err := buildPosters(ctx, resolvedTargets, configuration)
 	if err != nil {
 		return err
 	}
@@ -219,19 +225,38 @@ func sortedTargets(targets []string) []string {
 	return out
 }
 
-func buildPosters(ctx context.Context, targets []string) ([]xpost.Poster, error) {
+func buildPosters(ctx context.Context, targets []string, configuration configuration) ([]xpost.Poster, error) {
 	constructors := map[string]func(context.Context) (xpost.Poster, error){
 		"bluesky": func(ctx context.Context) (xpost.Poster, error) {
-			return bluesky.New(ctx, bluesky.Config{PDSURL: defaultBlueskyPDSURL})
+			return bluesky.New(ctx, bluesky.Config{
+				Handle:      configuration.Bluesky.Handle,
+				AppPassword: configuration.Bluesky.AppPassword,
+				PDSURL:      configuration.Bluesky.PDSURL,
+			})
 		},
 		"x": func(ctx context.Context) (xpost.Poster, error) {
-			return twitter.New(ctx)
+			return twitter.New(ctx, twitter.Config{
+				APIKey:       configuration.Twitter.ConsumerKey,
+				APISecret:    configuration.Twitter.ConsumerSecret,
+				AccessToken:  configuration.Twitter.AccessToken,
+				AccessSecret: configuration.Twitter.AccessTokenSecret,
+			})
 		},
 		"mastodon": func(ctx context.Context) (xpost.Poster, error) {
-			return mastodon.New(ctx)
+			return mastodon.New(ctx, mastodon.Config{
+				Server:       configuration.Mastodon.Server,
+				AccessToken:  configuration.Mastodon.AccessToken,
+				ClientID:     configuration.Mastodon.ClientID,
+				ClientSecret: configuration.Mastodon.ClientSecret,
+			})
 		},
 		"twitter": func(ctx context.Context) (xpost.Poster, error) {
-			return twitter.New(ctx)
+			return twitter.New(ctx, twitter.Config{
+				APIKey:       configuration.Twitter.ConsumerKey,
+				APISecret:    configuration.Twitter.ConsumerSecret,
+				AccessToken:  configuration.Twitter.AccessToken,
+				AccessSecret: configuration.Twitter.AccessTokenSecret,
+			})
 		},
 	}
 
@@ -261,7 +286,7 @@ func buildPosters(ctx context.Context, targets []string) ([]xpost.Poster, error)
 
 	if len(errs) > 0 {
 		if len(missingConfigurations) == len(errs) {
-			return nil, configurationError(missingConfigurations)
+			return nil, newConfigurationError(missingConfigurations)
 		}
 		return nil, errors.Join(errs...)
 	}
@@ -276,14 +301,22 @@ type targetConfiguration struct {
 	variables []string
 }
 
-func configurationError(configurations []targetConfiguration) error {
+type configurationError struct {
+	configurations []targetConfiguration
+}
+
+func (e configurationError) Error() string {
 	var message strings.Builder
 	message.WriteString("no publishing targets are configured\n\n")
-	message.WriteString("configure at least one target before posting:\n")
-	for _, configuration := range configurations {
-		fmt.Fprintf(&message, "  %s: set %s\n", configuration.target, strings.Join(configuration.variables, ", "))
+	message.WriteString("configure at least one target in ~/.config/xpost/config.toml (or a file passed with --config) or with environment variables:\n")
+	for _, target := range e.configurations {
+		fmt.Fprintf(&message, "  %s: %s\n", target.target, strings.Join(target.variables, ", "))
 	}
-	return errors.New(message.String())
+	return message.String()
+}
+
+func newConfigurationError(configurations []targetConfiguration) error {
+	return configurationError{configurations: configurations}
 }
 
 func dispatch(ctx context.Context, posters []xpost.Poster, req xpost.Request, out io.Writer, simulate bool) error {
