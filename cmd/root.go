@@ -308,15 +308,39 @@ type configurationError struct {
 func (e configurationError) Error() string {
 	var message strings.Builder
 	message.WriteString("no publishing targets are configured\n\n")
-	message.WriteString("configure at least one target in ~/.config/xpost/config.toml (or a file passed with --config) or with environment variables:\n")
+	message.WriteString("configure at least one target in ~/.config/xpost/config.toml or a file passed with --config:\n")
 	for _, target := range e.configurations {
-		fmt.Fprintf(&message, "  %s: %s\n", target.target, strings.Join(target.variables, ", "))
+		configKeys := configurationKeys(target.target)
+		if len(configKeys) == 0 {
+			fmt.Fprintf(&message, "  %s: %s\n", target.target, strings.Join(target.variables, ", "))
+			continue
+		}
+		fmt.Fprintf(&message, "  %s: %s (or %s)\n", target.target, strings.Join(configKeys, ", "), strings.Join(target.variables, ", "))
 	}
+	message.WriteString("use --config PATH to select another TOML file\n")
 	return message.String()
 }
 
 func newConfigurationError(configurations []targetConfiguration) error {
 	return configurationError{configurations: configurations}
+}
+
+func configurationKeys(target string) []string {
+	switch target {
+	case "bluesky":
+		return []string{"[bluesky].handle", "[bluesky].app_password"}
+	case "mastodon":
+		return []string{"[mastodon].server", "[mastodon].access_token"}
+	case "twitter", "x":
+		return []string{
+			"[twitter].consumer_key",
+			"[twitter].consumer_secret",
+			"[twitter].access_token",
+			"[twitter].access_token_secret",
+		}
+	default:
+		return nil
+	}
 }
 
 func dispatch(ctx context.Context, posters []xpost.Poster, req xpost.Request, out io.Writer, simulate bool) error {

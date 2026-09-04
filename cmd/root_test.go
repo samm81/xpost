@@ -80,9 +80,10 @@ func TestBuildPostersReportsMissingConfiguration(t *testing.T) {
 	message := err.Error()
 	for _, expected := range []string{
 		"no publishing targets are configured",
-		"bluesky: XPOST_BLUESKY_HANDLE, XPOST_BLUESKY_APP_PASSWORD",
-		"mastodon: XPOST_MASTODON_SERVER, XPOST_MASTODON_ACCESS_TOKEN",
-		"twitter: XPOST_TWITTER_CONSUMER_KEY",
+		"bluesky: [bluesky].handle, [bluesky].app_password (or XPOST_BLUESKY_HANDLE, XPOST_BLUESKY_APP_PASSWORD)",
+		"mastodon: [mastodon].server, [mastodon].access_token (or XPOST_MASTODON_SERVER, XPOST_MASTODON_ACCESS_TOKEN)",
+		"twitter: [twitter].consumer_key, [twitter].consumer_secret, [twitter].access_token, [twitter].access_token_secret (or XPOST_TWITTER_CONSUMER_KEY",
+		"use --config PATH to select another TOML file",
 	} {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("error = %q, want %q", message, expected)
