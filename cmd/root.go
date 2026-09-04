@@ -237,6 +237,7 @@ func buildPosters(ctx context.Context, targets []string) ([]xpost.Poster, error)
 
 	posters := make([]xpost.Poster, 0, len(targets))
 	var errs []error
+	var missingConfigurations []targetConfiguration
 	for _, target := range targets {
 		constructor, ok := constructors[target]
 		if !ok {
@@ -246,18 +247,43 @@ func buildPosters(ctx context.Context, targets []string) ([]xpost.Poster, error)
 		poster, err := constructor(ctx)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", target, err))
+			var missingEnvErr xpost.MissingEnvError
+			if errors.As(err, &missingEnvErr) {
+				missingConfigurations = append(missingConfigurations, targetConfiguration{
+					target:    target,
+					variables: missingEnvErr.Variables,
+				})
+			}
 			continue
 		}
 		posters = append(posters, poster)
 	}
 
 	if len(errs) > 0 {
+		if len(missingConfigurations) == len(errs) {
+			return nil, configurationError(missingConfigurations)
+		}
 		return nil, errors.Join(errs...)
 	}
 	if len(posters) == 0 {
 		return nil, errors.New("no targets available")
 	}
 	return posters, nil
+}
+
+type targetConfiguration struct {
+	target    string
+	variables []string
+}
+
+func configurationError(configurations []targetConfiguration) error {
+	var message strings.Builder
+	message.WriteString("no publishing targets are configured\n\n")
+	message.WriteString("configure at least one target before posting:\n")
+	for _, configuration := range configurations {
+		fmt.Fprintf(&message, "  %s: set %s\n", configuration.target, strings.Join(configuration.variables, ", "))
+	}
+	return errors.New(message.String())
 }
 
 func dispatch(ctx context.Context, posters []xpost.Poster, req xpost.Request, out io.Writer, simulate bool) error {
