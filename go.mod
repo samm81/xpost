@@ -6,7 +6,7 @@ require (
 	github.com/bluesky-social/indigo v0.0.0-20251203031309-bdbb48c13b04
 	github.com/charmbracelet/log v0.4.2
 	github.com/mattn/go-mastodon v0.0.10
-	github.com/michimani/gotwi v0.18.1
+	github.com/michimani/gotwi v0.18.2
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/rivo/uniseg v0.4.7
 	github.com/spf13/cobra v1.10.2
