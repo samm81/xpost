@@ -49,6 +49,8 @@ var (
 	verbose     bool
 )
 
+var errMessageRequired = errors.New("message is required")
+
 var supportedTargets = map[string]struct{}{
 	"bluesky":  {},
 	"mastodon": {},
@@ -97,9 +99,15 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	logutil.SetVerbose(verbose)
+	if len(args) == 0 && cmd.Flags().NFlag() == 0 && stdinIsTerminal(cmd.InOrStdin()) {
+		return cmd.Help()
+	}
 
 	message, err := resolveMessage(cmd, args)
 	if err != nil {
+		if len(args) == 0 && cmd.Flags().NFlag() == 0 && errors.Is(err, errMessageRequired) {
+			return cmd.Help()
+		}
 		return err
 	}
 
@@ -131,6 +139,14 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	return dispatch(ctx, posters, req, cmd.OutOrStdout(), dryRun)
 }
 
+func stdinIsTerminal(input io.Reader) bool {
+	file, ok := input.(*os.File)
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(file.Fd()))
+}
+
 func resolveMessage(cmd *cobra.Command, args []string) (string, error) {
 	var message string
 
@@ -150,22 +166,16 @@ func resolveMessage(cmd *cobra.Command, args []string) (string, error) {
 	}
 
 	stdin := cmd.InOrStdin()
-	if file, ok := stdin.(*os.File); ok {
-		info, err := file.Stat()
+	if !stdinIsTerminal(stdin) {
+		data, err := io.ReadAll(stdin)
 		if err != nil {
 			return "", fmt.Errorf("read stdin: %w", err)
 		}
-		if (info.Mode() & os.ModeCharDevice) == 0 {
-			data, err := io.ReadAll(stdin)
-			if err != nil {
-				return "", fmt.Errorf("read stdin: %w", err)
-			}
-			message = strings.TrimSpace(string(data))
-		}
+		message = strings.TrimSpace(string(data))
 	}
 
 	if message == "" {
-		return "", errors.New("message is required")
+		return "", errMessageRequired
 	}
 
 	return message, nil

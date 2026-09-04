@@ -22,6 +22,7 @@ THE SOFTWARE.
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/blacktop/xpost/cmd"
@@ -29,6 +30,7 @@ import (
 
 func main() {
 	if err := cmd.Execute(); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "xpost:", err)
 		os.Exit(1)
 	}
 }
