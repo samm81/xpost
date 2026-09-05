@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blacktop/xpost/internal/retry"
 	"github.com/blacktop/xpost/internal/xpost"
 	mastodonapi "github.com/mattn/go-mastodon"
 )
@@ -34,7 +35,8 @@ type Config struct {
 
 // Client wraps the Mastodon API client with xpost semantics.
 type Client struct {
-	client *mastodonapi.Client
+	client      *mastodonapi.Client
+	retryPolicy retry.Policy
 }
 
 // New constructs a Mastodon poster using the supplied configuration.
@@ -52,7 +54,7 @@ func New(ctx context.Context, base Config) (xpost.Poster, error) {
 	})
 	mastodonClient.Timeout = requestTimeout
 
-	return &Client{client: mastodonClient}, nil
+	return &Client{client: mastodonClient, retryPolicy: retry.DefaultPolicy()}, nil
 }
 
 // Name identifies the provider.
@@ -131,10 +133,20 @@ func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Resul
 		replyID = mastodonapi.ID(req.ReplyTo.ID)
 	}
 
-	response, err := c.client.PostStatus(ctx, &mastodonapi.Toot{
+	input := &mastodonapi.Toot{
 		Status:      status,
 		InReplyToID: replyID,
 		MediaIDs:    mediaIDs,
+	}
+
+	var response *mastodonapi.Status
+
+	err := retry.Do(ctx, c.retryPolicy, "post status", mastodonTransient, func() error {
+		var err error
+
+		response, err = c.client.PostStatus(ctx, input)
+
+		return err
 	})
 	if err != nil {
 		return xpost.Result{}, fmt.Errorf("post status: %w", err)
@@ -150,24 +162,48 @@ func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Resul
 }
 
 func (c *Client) uploadMedia(ctx context.Context, path, alt string) (*mastodonapi.Attachment, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, xpost.ValidationError{Provider: providerName, Reason: fmt.Sprintf("image %q not found", path)}
-		}
-		return nil, fmt.Errorf("open image: %w", err)
-	}
-	defer file.Close()
+	var attachment *mastodonapi.Attachment
 
-	attachment, err := c.client.UploadMediaFromMedia(ctx, &mastodonapi.Media{
-		File:        file,
-		Description: alt,
+	err := retry.Do(ctx, c.retryPolicy, "upload media", mastodonTransient, func() error {
+		// the request consumes the file, so open a fresh reader for every attempt.
+		//nolint:gosec // the path comes from the validated local publish request.
+		file, err := os.Open(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return xpost.ValidationError{Provider: providerName, Reason: fmt.Sprintf("image %q not found", path)}
+			}
+
+			return fmt.Errorf("open image: %w", err)
+		}
+		defer func() {
+			_ = file.Close()
+		}()
+
+		attachment, err = c.client.UploadMediaFromMedia(ctx, &mastodonapi.Media{
+			File:        file,
+			Description: alt,
+		})
+
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("upload media: %w", err)
 	}
 
+	if attachment == nil {
+		return nil, errors.New("upload media: empty response")
+	}
+
 	return attachment, nil
+}
+
+func mastodonTransient(err error) bool {
+	var apiErr *mastodonapi.APIError
+	if errors.As(err, &apiErr) && apiErr != nil && retry.HTTPStatus(apiErr.StatusCode) {
+		return true
+	}
+
+	return retry.NetworkError(err)
 }
 
 func loadConfig(base Config) (Config, error) {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blacktop/xpost/internal/retry"
 	"github.com/blacktop/xpost/internal/xpost"
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
@@ -40,7 +41,8 @@ type Config struct {
 
 // Client implements the xpost.Poster interface for Bluesky.
 type Client struct {
-	client *xrpc.Client
+	client      *xrpc.Client
+	retryPolicy retry.Policy
 }
 
 // New constructs a Bluesky poster.
@@ -73,7 +75,7 @@ func New(ctx context.Context, base Config) (xpost.Poster, error) {
 		Did:        session.Did,
 	}
 
-	return &Client{client: xrpcClient}, nil
+	return &Client{client: xrpcClient, retryPolicy: retry.DefaultPolicy()}, nil
 }
 
 // Name identifies the provider.
@@ -198,12 +200,22 @@ func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Resul
 		}
 	}
 
-	response, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+	input := &atproto.RepoCreateRecord_Input{
 		Collection: "app.bsky.feed.post",
 		Repo:       c.client.Auth.Did,
 		Record: &util.LexiconTypeDecoder{
 			Val: post,
 		},
+	}
+
+	var response *atproto.RepoCreateRecord_Output
+
+	err := retry.Do(ctx, c.retryPolicy, "create record", blueskyTransient, func() error {
+		var err error
+
+		response, err = atproto.RepoCreateRecord(ctx, c.client, input)
+
+		return err
 	})
 	if err != nil {
 		return xpost.Result{}, fmt.Errorf("create record: %w", err)
@@ -252,16 +264,35 @@ func (c *Client) uploadImage(ctx context.Context, path string) (*util.LexBlob, e
 		return nil, fmt.Errorf("read image: %w", err)
 	}
 
-	resp, err := atproto.RepoUploadBlob(ctx, c.client, bytes.NewReader(buf.Bytes()))
+	data := buf.Bytes()
+
+	var resp *atproto.RepoUploadBlob_Output
+
+	err = retry.Do(ctx, c.retryPolicy, "upload blob", blueskyTransient, func() error {
+		var err error
+
+		resp, err = atproto.RepoUploadBlob(ctx, c.client, bytes.NewReader(data))
+
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("upload blob: %w", err)
 	}
 
-	if resp.Blob == nil {
+	if resp == nil || resp.Blob == nil {
 		return nil, fmt.Errorf("upload blob: empty response")
 	}
 
 	return resp.Blob, nil
+}
+
+func blueskyTransient(err error) bool {
+	var apiErr *xrpc.Error
+	if errors.As(err, &apiErr) && apiErr != nil && retry.HTTPStatus(apiErr.StatusCode) {
+		return true
+	}
+
+	return retry.NetworkError(err)
 }
 
 // ProviderConfig merges defaults with environment-defined values.

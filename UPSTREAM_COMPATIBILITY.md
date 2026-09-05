@@ -38,6 +38,18 @@ visible URL before counting graphemes while keeping the original URL in the
 link facet. this is client behavior, not a promise that the Bluesky protocol
 will always use the same display form.
 
+## transient operation retries
+
+provider uploads and post creation retry up to three attempts for request
+timeouts, rate limits, server errors, and transient network or incomplete
+responses. retries use a bounded exponential backoff starting at 500 ms and
+ending at 4 seconds. validation, authentication, and other permanent errors
+are returned without retrying.
+
+the provider APIs do not expose one shared idempotency mechanism. if a post is
+accepted by a provider but its response is lost, a retry can create a
+duplicate post.
+
 ## update policy
 
 update these references deliberately when the provider behavior changes:

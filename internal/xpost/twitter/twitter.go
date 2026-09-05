@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/blacktop/xpost/internal/logutil"
+	"github.com/blacktop/xpost/internal/retry"
 	"github.com/blacktop/xpost/internal/xpost"
 	"github.com/michimani/gotwi"
 	"github.com/michimani/gotwi/media/upload"
@@ -48,7 +49,8 @@ type Config struct {
 
 // Client implements the Poster interface for X (Twitter).
 type Client struct {
-	api *gotwi.Client
+	api         *gotwi.Client
+	retryPolicy retry.Policy
 }
 
 // New constructs a Twitter poster using the supplied OAuth 1.0a configuration.
@@ -78,7 +80,7 @@ func New(ctx context.Context, base Config) (xpost.Poster, error) {
 		return nil, fmt.Errorf("twitter client not ready")
 	}
 
-	return &Client{api: client}, nil
+	return &Client{api: client, retryPolicy: retry.DefaultPolicy()}, nil
 }
 
 // Name returns the provider identifier.
@@ -199,7 +201,16 @@ func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Resul
 	}
 
 	logutil.Debugf("posting tweet: media_count=%d", len(mediaIDs))
-	response, err := managetweet.Create(ctx, c.api, input)
+
+	var response *managetweettypes.CreateOutput
+
+	err := retry.Do(ctx, c.retryPolicy, "post tweet", twitterTransient, func() error {
+		var err error
+
+		response, err = managetweet.Create(ctx, c.api, input)
+
+		return err
+	})
 	if err != nil {
 		return xpost.Result{}, fmt.Errorf("post tweet: %w", unwrapGotwiError(err))
 	}
@@ -226,44 +237,85 @@ func (c *Client) uploadMedia(ctx context.Context, imagePath, altText string) (st
 	}
 
 	logutil.Debugf("initialize upload: media_type=%s bytes=%d", mediaType, len(data))
-	initRes, err := upload.Initialize(ctx, c.api, &uploadtypes.InitializeInput{
+	initializeInput := &uploadtypes.InitializeInput{
 		MediaType:     mediaType,
 		TotalBytes:    len(data),
 		MediaCategory: category,
-	})
-	if err != nil {
-		return "", fmt.Errorf("initialize upload: %w", err)
 	}
-	if err := partialError(initRes.Errors); err != nil {
-		return "", fmt.Errorf("initialize upload: %w", err)
+
+	var initRes *uploadtypes.InitializeOutput
+
+	if err := retry.Do(ctx, c.retryPolicy, "initialize upload", twitterTransient, func() error {
+		var err error
+
+		initRes, err = upload.Initialize(ctx, c.api, initializeInput)
+		if err != nil {
+			return err
+		}
+
+		if initRes == nil {
+			return errors.New("empty response")
+		}
+
+		return partialError(initRes.Errors)
+	}); err != nil {
+		return "", fmt.Errorf("initialize upload: %w", unwrapGotwiError(err))
+	}
+
+	if initRes == nil {
+		return "", errors.New("initialize upload: empty response")
 	}
 
 	mediaID := initRes.Data.MediaID
 	logutil.Debugf("initialize complete: media_id=%s", mediaID)
 
-	appendIn := &uploadtypes.AppendInput{
-		MediaID:      mediaID,
-		Media:        bytes.NewReader(data),
-		SegmentIndex: 0,
-	}
-	appendIn.GenerateBoundary()
-
 	logutil.Debugf("append upload: media_id=%s segment=0", mediaID)
-	appendRes, err := upload.Append(ctx, c.api, appendIn)
-	if err != nil {
-		return "", fmt.Errorf("append upload: %w", err)
+
+	if err := retry.Do(ctx, c.retryPolicy, "append upload", twitterTransient, func() error {
+		appendIn := &uploadtypes.AppendInput{
+			MediaID:      mediaID,
+			Media:        bytes.NewReader(data),
+			SegmentIndex: 0,
+		}
+		appendIn.GenerateBoundary()
+
+		appendRes, err := upload.Append(ctx, c.api, appendIn)
+		if err != nil {
+			return err
+		}
+
+		if appendRes == nil {
+			return errors.New("empty response")
+		}
+
+		return partialError(appendRes.Errors)
+	}); err != nil {
+		return "", fmt.Errorf("append upload: %w", unwrapGotwiError(err))
 	}
-	if err := partialError(appendRes.Errors); err != nil {
-		return "", fmt.Errorf("append upload: %w", err)
-	}
+
 	logutil.Debugf("append completed")
 
-	finalizeRes, err := upload.Finalize(ctx, c.api, &uploadtypes.FinalizeInput{MediaID: mediaID})
-	if err != nil {
-		return "", fmt.Errorf("finalize upload: %w", err)
+	var finalizeRes *uploadtypes.FinalizeOutput
+
+	if err := retry.Do(ctx, c.retryPolicy, "finalize upload", twitterTransient, func() error {
+		var err error
+
+		finalizeRes, err = upload.Finalize(ctx, c.api, &uploadtypes.FinalizeInput{MediaID: mediaID})
+		if err != nil {
+			return err
+		}
+
+		if finalizeRes == nil {
+			return errors.New("empty response")
+		}
+
+		return partialError(finalizeRes.Errors)
+	}); err != nil {
+		return "", fmt.Errorf("finalize upload: %w", unwrapGotwiError(err))
 	}
-	if err := partialError(finalizeRes.Errors); err != nil {
-		return "", fmt.Errorf("finalize upload: %w", err)
+
+	if finalizeRes == nil {
+		return "", errors.New("finalize upload: empty response")
 	}
 
 	state := finalizeRes.Data.ProcessingInfo.State
@@ -303,12 +355,23 @@ func (c *Client) setAltText(ctx context.Context, mediaID, altText string) error 
 
 	ctx = context.WithValue(ctx, "Content-Type", "application/json;charset=UTF-8")
 
-	if err := c.api.CallAPI(ctx, metadataEndpoint, http.MethodPost, params, &metadataResponse{}); err != nil {
+	if err := retry.Do(ctx, c.retryPolicy, "set alt text", twitterTransient, func() error {
+		return c.api.CallAPI(ctx, metadataEndpoint, http.MethodPost, params, &metadataResponse{})
+	}); err != nil {
 		return fmt.Errorf("set alt text: %w", unwrapGotwiError(err))
 	}
 	logutil.Debugf("alt text set: media_id=%s", mediaID)
 
 	return nil
+}
+
+func twitterTransient(err error) bool {
+	var apiErr *gotwi.GotwiError
+	if errors.As(err, &apiErr) && apiErr != nil && retry.HTTPStatus(apiErr.StatusCode) {
+		return true
+	}
+
+	return retry.NetworkError(err)
 }
 
 func loadConfig(base Config) (Config, error) {
