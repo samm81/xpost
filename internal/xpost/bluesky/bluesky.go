@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -28,11 +27,9 @@ const (
 	providerName   = "bluesky"
 	requestTimeout = 30 * time.Second
 	maxGraphemes   = 300 // Bluesky's post character limit in graphemes
+	maxBytes       = 3000
 	maxImages      = 4
 )
-
-// urlRegex matches URLs in text for creating link facets
-var urlRegex = regexp.MustCompile(`https?://[^\s]+`)
 
 // Config contains Bluesky credentials and endpoint settings.
 type Config struct {
@@ -96,6 +93,14 @@ func (c *Client) Validate(req xpost.Request) error {
 	return validateRequest(req)
 }
 
+func requestText(req xpost.Request) string {
+	if req.Link == "" {
+		return req.Message
+	}
+
+	return req.Message + "\n\n" + req.Link
+}
+
 func validateRequest(req xpost.Request) error {
 	if len(req.Attachments) > maxImages {
 		return xpost.ValidationError{
@@ -104,11 +109,17 @@ func validateRequest(req xpost.Request) error {
 		}
 	}
 
-	text := req.Message
-	if req.Link != "" {
-		text = text + "\n\n" + req.Link
+	text := requestText(req)
+	prepared := prepareText(text)
+
+	if len(prepared.text) > maxBytes {
+		return xpost.ValidationError{
+			Provider: providerName,
+			Reason:   fmt.Sprintf("message too long: %d bytes (max %d)", len(prepared.text), maxBytes),
+		}
 	}
-	count := uniseg.GraphemeClusterCount(text)
+
+	count := uniseg.GraphemeClusterCount(prepared.text)
 	if count > maxGraphemes {
 		return xpost.ValidationError{
 			Provider: providerName,
@@ -141,15 +152,12 @@ func (c *Client) Post(ctx context.Context, req xpost.Request) error {
 // PostResult creates a new Bluesky post and returns its remote identity.
 func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Result, error) {
 	// Build the text, appending link if provided
-	text := req.Message
-	if req.Link != "" {
-		text = text + "\n\n" + req.Link
-	}
+	prepared := prepareText(requestText(req))
 
 	post := &bsky.FeedPost{
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		Text:      text,
-		Facets:    extractLinkFacets(text),
+		Text:      prepared.text,
+		Facets:    prepared.facets,
 	}
 
 	if req.ReplyTo != nil {
@@ -289,36 +297,4 @@ func loadConfig(base Config) (ProviderConfig, error) {
 	}
 
 	return cfg, nil
-}
-
-// extractLinkFacets finds all URLs in the text and creates link facets for them.
-// This makes URLs clickable in the Bluesky UI.
-func extractLinkFacets(text string) []*bsky.RichtextFacet {
-	matches := urlRegex.FindAllStringIndex(text, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-
-	facets := make([]*bsky.RichtextFacet, 0, len(matches))
-	for _, match := range matches {
-		// match[0] is start index, match[1] is end index
-		url := text[match[0]:match[1]]
-
-		facets = append(facets, &bsky.RichtextFacet{
-			Index: &bsky.RichtextFacet_ByteSlice{
-				ByteStart: int64(match[0]),
-				ByteEnd:   int64(match[1]),
-			},
-			Features: []*bsky.RichtextFacet_Features_Elem{
-				{
-					RichtextFacet_Link: &bsky.RichtextFacet_Link{
-						LexiconTypeID: "app.bsky.richtext.facet#link",
-						Uri:           url,
-					},
-				},
-			},
-		})
-	}
-
-	return facets
 }
