@@ -82,8 +82,21 @@ func New(ctx context.Context, base Config) (xpost.Poster, error) {
 // Name identifies the provider.
 func (c *Client) Name() string { return providerName }
 
+// Validate checks provider configuration and request constraints without network access.
+func Validate(base Config, req xpost.Request) error {
+	if _, err := loadConfig(base); err != nil {
+		return err
+	}
+
+	return validateRequest(req)
+}
+
 // Validate checks if the request meets Bluesky's constraints.
 func (c *Client) Validate(req xpost.Request) error {
+	return validateRequest(req)
+}
+
+func validateRequest(req xpost.Request) error {
 	if len(req.Attachments) > maxImages {
 		return xpost.ValidationError{
 			Provider: providerName,
@@ -102,6 +115,20 @@ func (c *Client) Validate(req xpost.Request) error {
 			Reason:   fmt.Sprintf("message too long: %d graphemes (max %d)", count, maxGraphemes),
 		}
 	}
+	if req.ReplyTo != nil {
+		if _, err := strongRef(req.ReplyTo); err != nil {
+			return err
+		}
+
+		root := req.RootReplyTo
+		if root == nil {
+			root = req.ReplyTo
+		}
+		if _, err := strongRef(root); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -125,25 +152,6 @@ func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Resul
 		Facets:    extractLinkFacets(text),
 	}
 
-	if len(req.Attachments) > 0 {
-		images := make([]*bsky.EmbedImages_Image, 0, len(req.Attachments))
-		for _, attachment := range req.Attachments {
-			blob, err := c.uploadImage(ctx, attachment.Path)
-			if err != nil {
-				return xpost.Result{}, err
-			}
-			images = append(images, &bsky.EmbedImages_Image{
-				Alt:   attachment.Alt,
-				Image: blob,
-			})
-		}
-		post.Embed = &bsky.FeedPost_Embed{
-			EmbedImages: &bsky.EmbedImages{
-				Images: images,
-			},
-		}
-	}
-
 	if req.ReplyTo != nil {
 		parent, err := strongRef(req.ReplyTo)
 		if err != nil {
@@ -160,6 +168,25 @@ func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Resul
 		post.Reply = &bsky.FeedPost_ReplyRef{
 			Parent: parent,
 			Root:   rootRef,
+		}
+	}
+
+	if len(req.Attachments) > 0 {
+		images := make([]*bsky.EmbedImages_Image, 0, len(req.Attachments))
+		for _, attachment := range req.Attachments {
+			blob, err := c.uploadImage(ctx, attachment.Path)
+			if err != nil {
+				return xpost.Result{}, err
+			}
+			images = append(images, &bsky.EmbedImages_Image{
+				Alt:   attachment.Alt,
+				Image: blob,
+			})
+		}
+		post.Embed = &bsky.FeedPost_Embed{
+			EmbedImages: &bsky.EmbedImages{
+				Images: images,
+			},
 		}
 	}
 

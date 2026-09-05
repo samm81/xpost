@@ -84,8 +84,21 @@ func New(ctx context.Context, base Config) (xpost.Poster, error) {
 // Name returns the provider identifier.
 func (c *Client) Name() string { return providerName }
 
+// Validate checks provider configuration and request constraints without network access.
+func Validate(base Config, req xpost.Request) error {
+	if _, err := loadConfig(base); err != nil {
+		return err
+	}
+
+	return validateRequest(req)
+}
+
 // Validate checks if the request meets Twitter's constraints.
 func (c *Client) Validate(req xpost.Request) error {
+	return validateRequest(req)
+}
+
+func validateRequest(req xpost.Request) error {
 	if len(req.Attachments) > maxImages {
 		return xpost.ValidationError{
 			Provider: providerName,
@@ -108,6 +121,26 @@ func (c *Client) Validate(req xpost.Request) error {
 			Reason:   fmt.Sprintf("message too long: %d characters (max %d)", count, maxChars),
 		}
 	}
+	if req.ReplyTo != nil && strings.TrimSpace(req.ReplyTo.ID) == "" {
+		return xpost.ValidationError{
+			Provider: providerName,
+			Reason:   "reply reference requires an id",
+		}
+	}
+	for _, attachment := range req.Attachments {
+		data, err := os.ReadFile(attachment.Path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return xpost.ValidationError{Provider: providerName, Reason: fmt.Sprintf("image %q not found", attachment.Path)}
+			}
+			return fmt.Errorf("read image: %w", err)
+		}
+
+		if _, _, err := resolveMediaType(attachment.Path, data); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -119,6 +152,17 @@ func (c *Client) Post(ctx context.Context, req xpost.Request) error {
 
 // PostResult publishes the message and returns the remote tweet identity.
 func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Result, error) {
+	var replyID string
+	if req.ReplyTo != nil {
+		replyID = strings.TrimSpace(req.ReplyTo.ID)
+		if replyID == "" {
+			return xpost.Result{}, xpost.ValidationError{
+				Provider: providerName,
+				Reason:   "reply reference requires an id",
+			}
+		}
+	}
+
 	var mediaIDs []string
 	if len(req.Attachments) > 0 {
 		mediaIDs = make([]string, 0, len(req.Attachments))
@@ -145,15 +189,9 @@ func (c *Client) PostResult(ctx context.Context, req xpost.Request) (xpost.Resul
 	if len(mediaIDs) > 0 {
 		input.Media = &managetweettypes.CreateInputMedia{MediaIDs: mediaIDs}
 	}
-	if req.ReplyTo != nil {
-		if strings.TrimSpace(req.ReplyTo.ID) == "" {
-			return xpost.Result{}, xpost.ValidationError{
-				Provider: providerName,
-				Reason:   "reply reference requires an id",
-			}
-		}
+	if replyID != "" {
 		input.Reply = &managetweettypes.CreateInputReply{
-			InReplyToTweetID: req.ReplyTo.ID,
+			InReplyToTweetID: replyID,
 		}
 	}
 

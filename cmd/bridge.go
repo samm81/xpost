@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	"github.com/blacktop/xpost/internal/xpost"
+	"github.com/blacktop/xpost/internal/xpost/bluesky"
+	"github.com/blacktop/xpost/internal/xpost/mastodon"
+	"github.com/blacktop/xpost/internal/xpost/twitter"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +41,7 @@ func runBridge(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("decode bridge request: %w", err)
 	}
 
-	if request.Operation != xpost.BridgeOperationPublish {
+	if request.Operation != xpost.BridgeOperationPublish && request.Operation != xpost.BridgeOperationValidate {
 		return fmt.Errorf("unsupported bridge operation %q", request.Operation)
 	}
 	target, err := normalizeBridgeTarget(request.Target)
@@ -55,6 +58,20 @@ func runBridge(cmd *cobra.Command, _ []string) error {
 		return writeBridgeResponse(cmd, bridgeErrorResponse(err))
 	}
 
+	requestPost := xpost.Request{
+		Message:     request.Text,
+		Attachments: request.Attachments,
+		ReplyTo:     request.ReplyTo,
+		RootReplyTo: request.RootReplyTo,
+	}
+	if err := validateBridgeRequest(target, configuration, requestPost); err != nil {
+		return writeBridgeResponse(cmd, bridgeErrorResponse(err))
+	}
+
+	if request.Operation == xpost.BridgeOperationValidate {
+		return writeBridgeResponse(cmd, xpost.BridgeResponse{Status: xpost.BridgeStatusValidated})
+	}
+
 	posterList, err := buildPosters(cmd.Context(), []string{target}, configuration)
 	if err != nil {
 		return writeBridgeResponse(cmd, bridgeErrorResponse(err))
@@ -63,17 +80,7 @@ func runBridge(cmd *cobra.Command, _ []string) error {
 		return errors.New("bridge target did not produce one poster")
 	}
 
-	requestPost := xpost.Request{
-		Message:     request.Text,
-		Attachments: request.Attachments,
-		ReplyTo:     request.ReplyTo,
-		RootReplyTo: request.RootReplyTo,
-	}
 	poster := posterList[0]
-	if err := poster.Validate(requestPost); err != nil {
-		return writeBridgeResponse(cmd, bridgeErrorResponse(err))
-	}
-
 	resultPoster, ok := poster.(xpost.ResultPoster)
 	if !ok {
 		return writeBridgeResponse(cmd, xpost.BridgeResponse{
@@ -93,6 +100,33 @@ func runBridge(cmd *cobra.Command, _ []string) error {
 		RemoteCID: result.RemoteCID,
 		URL:       result.URL,
 	})
+}
+
+func validateBridgeRequest(target string, configuration configuration, request xpost.Request) error {
+	switch target {
+	case "bluesky":
+		return bluesky.Validate(bluesky.Config{
+			Handle:      configuration.Bluesky.Handle,
+			AppPassword: configuration.Bluesky.AppPassword,
+			PDSURL:      configuration.Bluesky.PDSURL,
+		}, request)
+	case "mastodon":
+		return mastodon.Validate(mastodon.Config{
+			Server:       configuration.Mastodon.Server,
+			AccessToken:  configuration.Mastodon.AccessToken,
+			ClientID:     configuration.Mastodon.ClientID,
+			ClientSecret: configuration.Mastodon.ClientSecret,
+		}, request)
+	case "twitter":
+		return twitter.Validate(twitter.Config{
+			APIKey:       configuration.Twitter.ConsumerKey,
+			APISecret:    configuration.Twitter.ConsumerSecret,
+			AccessToken:  configuration.Twitter.AccessToken,
+			AccessSecret: configuration.Twitter.AccessTokenSecret,
+		}, request)
+	default:
+		return fmt.Errorf("unsupported target %q", target)
+	}
 }
 
 func normalizeBridgeTarget(target string) (string, error) {

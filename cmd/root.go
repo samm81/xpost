@@ -137,6 +137,11 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	validationErrs := validateRequests(resolvedTargets, configuration, req)
+	if len(validationErrs) > 0 {
+		return writeValidationErrors(cmd.OutOrStdout(), validationErrs)
+	}
+
 	posters, err := buildPosters(ctx, resolvedTargets, configuration)
 	if err != nil {
 		return err
@@ -296,6 +301,23 @@ func buildPosters(ctx context.Context, targets []string, configuration configura
 	return posters, nil
 }
 
+func validateRequests(targets []string, configuration configuration, request xpost.Request) []error {
+	var validationErrs []error
+	for _, target := range targets {
+		normalizedTarget, err := normalizeBridgeTarget(target)
+		if err != nil {
+			validationErrs = append(validationErrs, fmt.Errorf("%s: %w", target, err))
+			continue
+		}
+
+		if err := validateBridgeRequest(normalizedTarget, configuration, request); err != nil {
+			validationErrs = append(validationErrs, fmt.Errorf("%s: %w", target, err))
+		}
+	}
+
+	return validationErrs
+}
+
 type targetConfiguration struct {
 	target    string
 	variables []string
@@ -344,21 +366,6 @@ func configurationKeys(target string) []string {
 }
 
 func dispatch(ctx context.Context, posters []xpost.Poster, req xpost.Request, out io.Writer, simulate bool) error {
-	// Validate all platforms BEFORE posting to any
-	var validationErrs []error
-	for _, poster := range posters {
-		if err := poster.Validate(req); err != nil {
-			validationErrs = append(validationErrs, fmt.Errorf("%s: %w", poster.Name(), err))
-		}
-	}
-	if len(validationErrs) > 0 {
-		fmt.Fprintln(out, "Validation failed - no posts were sent:")
-		for _, err := range validationErrs {
-			fmt.Fprintf(out, "  • %v\n", err)
-		}
-		return errors.Join(validationErrs...)
-	}
-
 	if simulate {
 		message := req.Message
 		if req.Link != "" {
@@ -389,6 +396,19 @@ func dispatch(ctx context.Context, posters []xpost.Poster, req xpost.Request, ou
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+func writeValidationErrors(out io.Writer, validationErrs []error) error {
+	if _, err := fmt.Fprintln(out, "Validation failed - no posts were sent:"); err != nil {
+		return fmt.Errorf("write validation status: %w", err)
+	}
+	for _, err := range validationErrs {
+		if _, writeErr := fmt.Fprintf(out, "  • %v\n", err); writeErr != nil {
+			return fmt.Errorf("write validation error: %w", writeErr)
+		}
+	}
+
+	return errors.Join(validationErrs...)
 }
 
 type providerStyle struct {

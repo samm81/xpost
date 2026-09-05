@@ -58,8 +58,21 @@ func New(ctx context.Context, base Config) (xpost.Poster, error) {
 // Name identifies the provider.
 func (c *Client) Name() string { return providerName }
 
+// Validate checks provider configuration and request constraints without network access.
+func Validate(base Config, req xpost.Request) error {
+	if _, err := loadConfig(base); err != nil {
+		return err
+	}
+
+	return validateRequest(req)
+}
+
 // Validate checks if the request meets Mastodon's constraints.
 func (c *Client) Validate(req xpost.Request) error {
+	return validateRequest(req)
+}
+
+func validateRequest(req xpost.Request) error {
 	if len(req.Attachments) > maxImages {
 		return xpost.ValidationError{
 			Provider: providerName,
@@ -78,6 +91,13 @@ func (c *Client) Validate(req xpost.Request) error {
 			Reason:   fmt.Sprintf("message too long: %d characters (max %d)", count, maxChars),
 		}
 	}
+	if req.ReplyTo != nil && strings.TrimSpace(req.ReplyTo.ID) == "" {
+		return xpost.ValidationError{
+			Provider: providerName,
+			Reason:   "reply reference requires an id",
+		}
+	}
+
 	return nil
 }
 

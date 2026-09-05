@@ -3,10 +3,12 @@ package xpost
 import "context"
 
 const (
-	BridgeOperationPublish = "publish"
-	BridgeStatusPublished  = "published"
-	BridgeStatusFailed     = "failed"
-	BridgeStatusRejected   = "rejected"
+	BridgeOperationPublish  = "publish"
+	BridgeOperationValidate = "validate"
+	BridgeStatusPublished   = "published"
+	BridgeStatusValidated   = "validated"
+	BridgeStatusFailed      = "failed"
+	BridgeStatusRejected    = "rejected"
 )
 
 // Attachment describes one local image and its alternative text.
