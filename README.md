@@ -17,7 +17,7 @@
 
 - [x] X/Twitter
 - [x] Mastodon
-- [x] BlueSky 
+- [x] BlueSky
 
 ## Getting Started
 
@@ -44,7 +44,7 @@ select another file. Keep this file private because it contains credentials.
 
 ```toml
 [bluesky]
-handle = "your.handle"
+handle = "you.bksy.social"
 app_password = "your_app_password"
 # pds_url = "https://bsky.social"
 
